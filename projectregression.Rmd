@@ -1,0 +1,377 @@
+---
+title: "projectregression"
+author: "kayvan shabani"
+date: "8/13/2020"
+output: html_document
+---
+
+<p style="font-size:25px;">
+<b>
+First I delete NaNs and empty cells to have a complete dataset. Then I split data to Train and Test with 4 to 1 ratio because the more train data one have, one can have better and more accurate model. Additionally, it is better to spend more time on training and spend less time and energy on testing. I chose “Global_Sales” to be the target variable. With summary function one can gain a general idea about attributes.
+</b>
+</p>
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(regclass)
+library(olsrr)
+library(sur)
+library(fastDummies)
+library(MASS)
+library(car)
+library(glmnet)
+library(purrr)
+library(caTools)
+
+set.seed(100)
+setwd("/Users/kayvanshabani/Documents/educational/Regression/project/regression/")
+videogames = read.csv("Video_Games_Sales_as_at_22_Dec_2016.csv")
+videogames = na.omit(videogames)
+videogames = filter(videogames, videogames$Year_of_Release != "N/A")
+videogames = filter(videogames, Rating != "")
+
+vgsample = sample.split(videogames, SplitRatio = 0.8)
+videogames_train = subset(videogames, vgsample == TRUE)
+videogames_test = subset(videogames, vgsample == FALSE)
+target = "Global_Sales"
+
+sapply(videogames_train[,-10], summary)
+```
+
+<p style="font-size:25px;">
+<b>
+I use ggplot2 to draw point plots and boxplots between attributes and target to gain a better insight from dataset.
+</b>
+</p>
+
+```{r}
+ggplot(videogames_train, aes(videogames_train$Critic_Score, videogames_train$Global_Sales)) + geom_point()
+ggplot(videogames_train, aes(videogames_train$User_Score, videogames_train$Global_Sales)) + geom_point()
+ggplot(videogames_train, aes(videogames_train$Critic_Score, videogames_train$User_Score)) + geom_point()
+ggplot(videogames_train, aes(videogames_train$Year_of_Release, videogames_train$Global_Sales)) + geom_boxplot()
+ggplot(videogames_train, aes(videogames_train$Genre)) + geom_histogram(stat = "density")
+ggplot(videogames_train, aes(videogames_train$Platform)) + geom_histogram(stat = "density")
+ggplot(videogames_train, aes(videogames_train$Year_of_Release)) + geom_histogram(stat = "density")
+ggplot(videogames_train, aes(videogames_train$Genre)) + geom_histogram(stat = "count")
+ggplot(videogames_train, aes(videogames_train$Platform)) + geom_histogram(stat = "count")
+ggplot(videogames_train, aes(videogames_train$Year_of_Release)) + geom_histogram(stat = "count")
+ggplot(videogames_train, aes(videogames_train$Publisher, videogames_train$User_Count)) + geom_boxplot()
+```
+
+<p style="font-size:25px;">
+<b>
+Now, I convert qualitative variables to dummies which ables me to do the regression. If I do not do the conversion, I should give a number to each category. In this way some categories gain more score than others, which is not true because all of the categories have the same level of importance. Hence, I assume one dummy variable for each category. 0 means sample is not in that category and 1 means sample is in that category.
+<br>
+Also, because target is Global Sales, I will not consider countries’ sales as attributes because they are part of Global Sales and in a way they are same as target, so they should not be considered as attributes. If we use them R squared will be large. However, it is not necessarily good because they are part of the target variable.
+<br>
+Additionally, some columns have number values but their type is character in dataset, so I convert them to numbers.
+</b>
+</p>
+
+```{r}
+newvidtr = dummy_cols(videogames_train, select_columns = c('Platform','Genre','Publisher','Developer' ,'Rating'))
+newvidte = dummy_cols(videogames_test, select_columns = c('Platform','Genre','Publisher','Developer' ,'Rating'))
+videogames_train = newvidtr[,-c(2,4:9,15,16)]
+videogames_test = newvidte[,-c(2,4:9,15,16)]
+videogames_train$Year_of_Release = as.numeric(videogames_train$Year_of_Release)
+videogames_train$User_Score = as.double(videogames_train$User_Score)
+videogames_test$Year_of_Release = as.numeric(videogames_test$Year_of_Release)
+videogames_test$User_Score = as.double(videogames_test$User_Score)
+```
+
+<p style="font-size:25px;">
+<b>
+In this step, I calculate PCA and see that from 1423 dimensions, cumulative variance became 90 percent after 1087, and got to 95 percent after 1159. Hence, if i use forward or backward or best subset algorithms, I can not reduce a lot of dimensions. Therefore, I fit the regression model with all of the features and will delete the ones with large pvalue.
+</b>
+</p>
+
+```{r}
+videopca = prcomp(videogames_train[,-c(1,3)], center = TRUE, scale. = TRUE)
+summary(videopca)$importance[3,]
+```
+
+<p style="font-size:25px;">
+<b>
+Because I am going to use VIF to check collinearity and this function will not run unless variables which have complete collinearity do not exist in the model, I first make a model without these variables.
+</b>
+</p>
+
+```{r}
+firstlin = lm(Global_Sales~.-(Global_Sales+Name), videogames_train)
+ldvars = rownames(alias(firstlin)$Complete)
+firstformula = as.formula(paste("Global_Sales~.-(Global_Sales+Name+", paste(ldvars, collapse = "+"), ")"))
+firstlin.new = lm(firstformula, videogames_train)
+```
+
+<p style="font-size:25px;">
+<b>
+Then I choose variable that have pvalues lower than 0.05 (26 variables) and make another model with them.
+</b>
+</p>
+
+```{r}
+newvars = rownames(summary(firstlin.new)$coefficients[summary(firstlin.new)$coefficients[,4]<0.05,])
+secondformula = as.formula(paste("Global_Sales~", paste(newvars[-1], collapse = "+"))) 
+secondlin = lm(secondformula, videogames_train)
+summary(secondlin)
+```
+
+<p style="font-size:25px;">
+<b>
+Now I run PCA with this 26 variables and see that cumulative variance proportion got to 90 percent after 21st dimension.
+</b>
+</p>
+
+```{r}
+newvarspca = gsub("\\`","",newvars)
+videopca2 = prcomp(videogames_train[,c(newvarspca[-1])], center = TRUE, scale. = TRUE)
+summary(videopca2)
+```
+
+<p style="font-size:25px;">
+<b>
+Now I can use forward algorithm to choose these dimensions because it seems like that dataset can perform well on 21 dimensions. I cannot use best subset algorithm because of memory and time problems. Also, I could use backward algorithm.
+</b>
+</p>
+
+```{r}
+frwrd = ols_step_forward_p(secondlin)
+newvars2 = frwrd$predictors[1:21]
+```
+
+<p style="font-size:25px;">
+<b>
+Then I train a model with these 21 variables and calculate VIF. All of the values in VIF are in the normal range and there are no collinearity. In my last model 2 of the variables had pvalues greater than 0.05. I omit them from the model and train a model with 19 left variables.
+</b>
+</p>
+
+```{r}
+thirdformula = as.formula(paste("Global_Sales~", paste(newvars2, collapse = "+"))) 
+thirdlin = lm(thirdformula, videogames_train)
+summary(thirdlin)
+vif(thirdlin)
+finalvars = newvars2[1:19]
+fourthformula = as.formula(paste("Global_Sales~", paste(finalvars, collapse = "+"))) 
+fourthlin = lm(fourthformula, videogames_train)
+summary(fourthlin)
+```
+
+<p style="font-size:25px;">
+<b>
+Now I will identify samples which are outlier or have high leverage and delete them from dataset. First, I draw plots for my last model. From residual vs leverage plot it can be seen that some samples have long distance from others on horizontal axis and from normal value((p+1)/n). These are the high leverage samples. I detect them and delete the from the dataset. Also, there are samples which have standardized residual values below -3 or greater than 3. These are outliers. I detect and omit them from the dataset.
+<br>
+Then I put remaining samples with their attributes on a new table. Then I draw boxplots from attributes of this table to make sure I did not miss any high leverage or outlier.
+</b>
+</p>
+
+```{r}
+plot(fourthlin)
+levs = leverage(fourthlin)
+levsdf = data.frame(
+  x1 = levs,
+  x2 = 0
+)
+colnames(levsdf) = c("x1", "x2")
+
+highlevs = as.numeric(row.names(levsdf[levsdf$x1 > 0.1, ]))
+stdrs = stdres(fourthlin)
+lowstdrs = as.numeric(names(stdrs[stdrs < -3]))
+highstdrs = as.numeric(names(stdrs[stdrs > 3]))
+outliers = union(union(highlevs, highstdrs), lowstdrs)
+videogames_train2 = videogames_train[-c(outliers),c(gsub("\\`","",finalvars), "Global_Sales")]
+finalvars
+ggplot(videogames_train2, aes(User_Count)) + geom_boxplot()
+ggplot(videogames_train2, aes(Critic_Count)) + geom_boxplot()
+ggplot(videogames_train2, aes(Critic_Score)) + geom_boxplot()
+ggplot(videogames_train2, aes(Year_of_Release)) + geom_boxplot()
+ggplot(videogames_train2, aes(Global_Sales)) + geom_boxplot()
+```
+
+<p style="font-size:25px;">
+<b>
+After deleting some samples in the last section, now I train a model on the dataset and will delete attributes with pvalues greater than 0.5 and train another model without those variables. These variables are my final variables which I use their extension to find the final model.
+</b>
+</p>
+
+```{r}
+fifthlin = lm(fourthformula, videogames_train2)
+summary(fifthlin)
+newvars3 = rownames(summary(fifthlin)$coefficients[summary(fifthlin)$coefficients[,4]<0.05,])
+sixthformula = as.formula(paste("Global_Sales~", paste(newvars3[-1], collapse = "+"))) 
+sixthlin = lm(sixthformula, videogames_train2)
+summary(sixthlin)
+videogames_train3 = videogames_train2[,c(newvars3[-1], "Global_Sales")]
+```
+
+<p style="font-size:25px;">
+<b>
+First I train a model with all the variables and their squares and their logarithms and their interactions. Then I detect the features with pvalues lower than 0.05 and train a model with them. Then with backward stepwise algorithm and using threshold of pvalue = 0.05 I delete some of the variables and train a model with remaining variables.
+</b>
+</p>
+
+```{r}
+seventhlin = lm(Global_Sales~(.)^2+log(User_Count)+log(Critic_Count)+log(Year_of_Release)+log(Critic_Score)+
+                  poly(User_Count,2)+poly(Critic_Count,2)+poly(Year_of_Release,2)+poly(Critic_Score,2), videogames_train3)
+summary(seventhlin)
+
+eighthlin = lm(Global_Sales~(.)^2+log(User_Count)+log(Critic_Count)+log(Year_of_Release)+log(Critic_Score)+
+                 poly(User_Count,2)+poly(Critic_Count,2)+poly(Year_of_Release,2)+poly(Critic_Score,2)-
+                 User_Count-Critic_Count-Year_of_Release-Critic_Score-Developer_Nintendo:Platform_PC-
+                 Developer_Nintendo:Genre_Sports-Genre_Sports:Genre_Misc-Platform_WiiU:Platform_GC-
+                 Platform_Wii:Platform_GC-Platform_Wii:Platform_WiiU-Platform_PC:Platform_Wii-
+                 Platform_PC:Platform_GC-Platform_PC:Platform_WiiU, videogames_train3)
+summary(eighthlin)
+bckwrd = ols_step_backward_p(eighthlin, prem = 0.05)
+bckwrd$removed
+newvars4 = setdiff(names(eighthlin$coefficients),bckwrd$removed)[-c(1,12:19)]
+ninthformula = as.formula(paste("Global_Sales~", paste(newvars4, collapse = "+"), "+poly(User_Count,2)+
+                                poly(Critic_Count,2)+poly(Year_of_Release,2)+
+                                poly(Critic_Score,2)"))
+ninthlin = lm(ninthformula, videogames_train3)
+summary(ninthlin)
+```
+
+<p style="font-size:25px;">
+<b>
+It can be seen that there are still some variables with high pvalue. I delete them and train another model. It can be seen that every variable in this model has a pvalue below 0.05.
+</b>
+</p>
+
+```{r}
+tenthformula = as.formula(paste("Global_Sales~", paste(newvars4, collapse = "+"), "+User_Count+
+                                poly(Critic_Count,2)[,2]+poly(Year_of_Release,2)[,2]+
+                                poly(Critic_Score,2)[,2]+Critic_Count + Year_of_Release+
+                                Critic_Score-Platform_WiiU-Genre_Misc"))
+tenthlin = lm(tenthformula, videogames_train3)
+summary(tenthlin)
+```
+
+<p style="font-size:25px;">
+<b>
+It can be seen that VIF is high for lots of the variables in this model. In each step I delete the variable with highest VIF and train another model until all of the VIFs are within the normal range (below 10). At the end there will be 24 variables. One of them has high pvalue. I delete that variable and train a new model. Then I make a new table with remaining samples and variable and use that to examine lasso and ridge regularizations.
+</b>
+</p>
+
+```{r}
+prev = paste("Global_Sales~", paste(newvars4, collapse = "+"), "+User_Count+
+                                poly(Critic_Count,2)[,2]+poly(Year_of_Release,2)[,2]+
+                                poly(Critic_Score,2)[,2]+Critic_Count + Year_of_Release+
+                                Critic_Score-Platform_WiiU-Genre_Misc")
+regformula = as.formula(prev)
+regmodel = lm(regformula, videogames_train3)
+while (max(vif(regmodel)) >= 10) {
+  regformula = as.formula(paste(prev, "-", names(vif(regmodel)[vif(regmodel) == max(vif(regmodel))])))
+  regmodel = lm(regformula, videogames_train3)
+  prev = paste(prev, "-", names(vif(regmodel)[vif(regmodel) == max(vif(regmodel))]))
+}
+summary(regmodel)
+vif(regmodel)
+regformula = as.formula(paste(prev, "-", "Developer_Nintendo:Genre_Misc"))
+regmodel = lm(regformula, videogames_train3)
+summary(regmodel)
+
+videogames_train4 = data.frame(
+  Platform_Wii = videogames_train3$Platform_Wii,                      
+  Platform_GC = videogames_train3$Platform_GC,                       
+  log.User_Count = log(videogames_train3$User_Count),                    
+  log.Year_of_Release = log(videogames_train3$Year_of_Release),            
+  Critic_Count = videogames_train3$Critic_Count,
+  poly.Critic_Count.22 = poly(videogames_train3$Critic_Count, 2)[,2],            
+  poly.Year_of_Release.22 = poly(videogames_train3$Year_of_Release, 2)[,2],        
+  poly.Critic_Score.22 = poly(videogames_train3$Critic_Score, 2)[,2],
+  Developer_Nintendo.Critic_Count = videogames_train3$Developer_Nintendo*videogames_train3$Critic_Count, 
+  Developer_Nintendo.Platform_Wii = videogames_train3$Developer_Nintendo*videogames_train3$Platform_Wii,   
+  Developer_Nintendo.Platform_WiiU = videogames_train3$Developer_Nintendo*videogames_train3$Platform_WiiU,   
+  Developer_Nintendo.Platform_GC = videogames_train3$Developer_Nintendo*videogames_train3$Platform_GC,     
+  Critic_Count.User_Count = videogames_train3$Critic_Count*videogames_train3$User_Count,           
+  Genre_Misc.Critic_Count = videogames_train3$Critic_Count*videogames_train3$Genre_Misc,                    
+  Platform_PC.User_Count = videogames_train3$Platform_PC*videogames_train3$User_Count,            
+  Platform_WiiU.User_Count = videogames_train3$Platform_WiiU*videogames_train3$User_Count,          
+  Genre_Sports.User_Count = videogames_train3$Genre_Sports*videogames_train3$User_Count,       
+  Platform_PC.Year_of_Release = videogames_train3$Year_of_Release*videogames_train3$Platform_PC,                    
+  Platform_PC.Genre_Misc = videogames_train3$Genre_Misc*videogames_train3$Platform_PC,                     
+  Critic_Score.Year_of_Release = videogames_train3$Critic_Score*videogames_train3$Year_of_Release,               
+  Platform_Wii.Genre_Sports = videogames_train3$Platform_Wii*videogames_train3$Genre_Sports,                        
+  Platform_Wii.Genre_Misc = videogames_train3$Platform_Wii*videogames_train3$Genre_Misc,                                   
+  Genre_Sports.Year_of_Release = videogames_train3$Year_of_Release*videogames_train3$Genre_Sports,
+  Global_Sales = videogames_train3$Global_Sales
+)
+```
+
+<p style="font-size:25px;">
+<b>
+I will first find the proper regularization parameter with cross validation and then train the models with ridge and lasso based on my last dataset.
+</b>
+</p>
+
+```{r}
+cv.lasso = cv.glmnet(as.matrix(videogames_train4[,-24]), as.matrix(videogames_train4[,24]),alpha = 1)
+lassomodel = glmnet(as.matrix(videogames_train4[,-24]), as.matrix(videogames_train4[,24]),
+                             alpha = 1, lambda = cv.lasso$lambda.min)
+cv.ridge = cv.glmnet(as.matrix(videogames_train4[,-24]), as.matrix(videogames_train4[,24]),alpha = 0)
+ridgemodel = glmnet(as.matrix(videogames_train4[,-24]), as.matrix(videogames_train4[,24]),
+                    alpha = 0, lambda = cv.ridge$lambda.min)
+```
+
+<p style="font-size:25px;">
+<b>
+Now I convert the test dataset to the train dataset’s format to have the same features.
+</b>
+</p>
+
+```{r}
+videogames_test_modified = data.frame(
+  Platform_Wii = videogames_test$Platform_Wii,                      
+  Platform_GC = videogames_test$Platform_GC,                       
+  log.User_Count = log(videogames_test$User_Count),                    
+  log.Year_of_Release = log(videogames_test$Year_of_Release),            
+  Critic_Count = videogames_test$Critic_Count,
+  poly.Critic_Count.22 = poly(videogames_test$Critic_Count, 2)[,2],            
+  poly.Year_of_Release.22 = poly(videogames_test$Year_of_Release, 2)[,2],        
+  poly.Critic_Score.22 = poly(videogames_test$Critic_Score, 2)[,2],
+  Developer_Nintendo.Critic_Count = videogames_test$Developer_Nintendo*videogames_test$Critic_Count, 
+  Developer_Nintendo.Platform_Wii = videogames_test$Developer_Nintendo*videogames_test$Platform_Wii,   
+  Developer_Nintendo.Platform_WiiU = videogames_test$Developer_Nintendo*videogames_test$Platform_WiiU,   
+  Developer_Nintendo.Platform_GC = videogames_test$Developer_Nintendo*videogames_test$Platform_GC,     
+  Critic_Count.User_Count = videogames_test$Critic_Count*videogames_test$User_Count,           
+  Genre_Misc.Critic_Count = videogames_test$Critic_Count*videogames_test$Genre_Misc,                    
+  Platform_PC.User_Count = videogames_test$Platform_PC*videogames_test$User_Count,            
+  Platform_WiiU.User_Count = videogames_test$Platform_WiiU*videogames_test$User_Count,          
+  Genre_Sports.User_Count = videogames_test$Genre_Sports*videogames_test$User_Count,       
+  Platform_PC.Year_of_Release = videogames_test$Year_of_Release*videogames_test$Platform_PC,                    
+  Platform_PC.Genre_Misc = videogames_test$Genre_Misc*videogames_test$Platform_PC,                     
+  Critic_Score.Year_of_Release = videogames_test$Critic_Score*videogames_test$Year_of_Release,               
+  Platform_Wii.Genre_Sports = videogames_test$Platform_Wii*videogames_test$Genre_Sports,                        
+  Platform_Wii.Genre_Misc = videogames_test$Platform_Wii*videogames_test$Genre_Misc,                                   
+  Genre_Sports.Year_of_Release = videogames_test$Year_of_Release*videogames_test$Genre_Sports
+)
+```
+
+<p style="font-size:25px;">
+<b>
+With summing inner product of test dataset and coefficients of “ridge” and “lasso” and “no regularization” models with intercepts, predictions will be resulted.
+<br>
+I calculate sum of squared errors for all models including naive model of average.
+</b>
+</p>
+
+```{r}
+lassopred = as.matrix(videogames_test_modified) %*% coef(lassomodel)[2:24] + coef(lassomodel)[1]
+ridgepred = as.matrix(videogames_test_modified) %*% coef(ridgemodel)[2:24] + coef(ridgemodel)[1]
+lassorss = sum((videogames_test$Global_Sales - lassopred)^2)
+ridgerss = sum((videogames_test$Global_Sales - ridgepred)^2)
+lassorss
+ridgerss
+regresspred = as.matrix(videogames_test_modified) %*% regmodel$coefficients[2:24] + regmodel$coefficients[1]
+regressrss = sum((videogames_test$Global_Sales - regresspred)^2)
+regressrss
+meanestimate_rss = sum((videogames_test$Global_Sales - mean(videogames_test$Global_Sales))^2)
+meanestimate_rss
+```
+
+<p style="font-size:25px;">
+<b>
+It can be seen that model with lasso had the best result.
+</b>
+</p>
